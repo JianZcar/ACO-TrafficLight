@@ -1,0 +1,22 @@
+FROM python:3.12-slim
+
+RUN apt-get update && apt-get install -y \
+    sumo sumo-tools sumo-doc \
+    x11vnc xvfb websockify novnc \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir sumolib traci psutil
+
+WORKDIR /server
+
+COPY middleware/ /server/
+COPY sumo_config/ /server/sumo_config/
+EXPOSE 8080 5000
+
+CMD bash -c "\
+    Xvfb :1 -screen 0 1920x1080x16 & \
+    export DISPLAY=:1 && \
+    x11vnc -display :1 -nopw -forever -shared -quiet & \
+    websockify --web=/usr/share/novnc/ 8080 localhost:5900 >/dev/null 2>&1 & \
+    exec python -u /server/main.py"
+

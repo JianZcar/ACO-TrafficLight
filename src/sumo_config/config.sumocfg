@@ -1,0 +1,7 @@
+<configuration>
+    <input>
+        <net-file value="net.xml"/>
+        <route-files value="routes.xml"/>
+        <gui-settings-file value="gui_setting.xml"/>
+    </input>
+</configuration>

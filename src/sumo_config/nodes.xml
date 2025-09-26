@@ -1,0 +1,6 @@
+<nodes>
+    <node id="J0" x="0.0" y="0.0" type="traffic_light"/> <!-- Junction -->
+    <node id="E" x="100.0" y="0.0"/>  <!-- East endpoint -->
+    <node id="W" x="-100.0" y="0.0"/> <!-- West endpoint -->
+    <node id="S" x="0.0" y="-100.0"/> <!-- South endpoint -->
+</nodes>

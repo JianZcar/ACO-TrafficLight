@@ -1,0 +1,23 @@
+<routes>
+    <vType id="car" accel="2.6" decel="4.5" sigma="0.5" length="5" maxSpeed="70"/>
+
+    <!-- Define routes for all possible movements -->
+    <route id="east_west" edges="E_in W_out"/>      <!-- East → West (straight) -->
+    <route id="east_south" edges="E_in S_out"/>     <!-- East → South (left turn) -->
+    <route id="west_east" edges="W_in E_out"/>      <!-- West → East (straight) -->
+    <route id="west_south" edges="W_in S_out"/>     <!-- West → South (right turn) -->
+    <route id="south_east" edges="S_in E_out"/>    <!-- South → East (left turn) -->
+    <route id="south_west" edges="S_in W_out"/>     <!-- South → West (right turn) -->
+
+    <!-- Flows for East-bound lanes -->
+    <flow id="flow_east_straight" route="east_west" departLane="0" vehsPerHour="300" begin="0" end="3600" type="car"/>
+    <flow id="flow_east_left" route="east_south" departLane="1" vehsPerHour="300" begin="0" end="3600" type="car"/>
+
+    <!-- Flows for West-bound lanes -->
+    <flow id="flow_west_straight" route="west_east" departLane="0" vehsPerHour="300" begin="0" end="3600" type="car"/>
+    <flow id="flow_west_right" route="west_south" departLane="1" vehsPerHour="300" begin="0" end="3600" type="car"/>
+
+    <!-- Flows for South-bound lanes -->
+    <flow id="flow_south_left" route="south_east" departLane="0" vehsPerHour="300" begin="0" end="3600" type="car"/>
+    <flow id="flow_south_right" route="south_west" departLane="1" vehsPerHour="300" begin="0" end="3600" type="car"/>
+</routes>

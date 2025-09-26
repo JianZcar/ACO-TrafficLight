@@ -1,0 +1,9 @@
+<viewsettings>
+    <scheme name="real world"/> <!-- Realistic road colors -->
+    <delay value="100"/> <!-- Slow down GUI updates for better visibility -->
+    <background color="50,50,50"/> <!-- Dark gray background -->
+    <showGrid value="true" gridX="50" gridY="50"/> <!-- Add a grid -->
+    <showJunctionName value="true"/> <!-- Show intersection names -->
+    <showEdgeName value="true"/> <!-- Show road names -->
+    <showVehicleNames value="true"/> <!-- Show vehicle IDs -->
+</viewsettings>

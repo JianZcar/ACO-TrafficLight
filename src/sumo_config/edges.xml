@@ -1,0 +1,10 @@
+<edges>
+    <!-- Incoming edges (toward junction) -->
+    <edge id="E_in" from="E" to="J0" numLanes="2"/>
+    <edge id="W_in" from="W" to="J0" numLanes="2"/>
+    <edge id="S_in" from="S" to="J0" numLanes="2"/>
+    <!-- Outgoing edges (from junction) -->
+    <edge id="E_out" from="J0" to="E" numLanes="2"/>
+    <edge id="W_out" from="J0" to="W" numLanes="2"/>
+    <edge id="S_out" from="J0" to="S" numLanes="2"/>
+</edges>
