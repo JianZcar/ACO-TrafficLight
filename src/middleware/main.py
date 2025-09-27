@@ -1,7 +1,7 @@
 import os
 import sys
+import time
 import traci
-import uvloop
 import asyncio
 import msgpack
 import subprocess
@@ -53,23 +53,6 @@ def setup_sumo() -> list:
     ]
 
 
-# ----------------------
-# SUMO control
-# ----------------------
-async def start_sumo():
-    traci.start(setup_sumo())
-
-
-# ----------------------
-# Endpoints
-# ----------------------
-@endpoint
-async def step(params=None):
-    sim_time = await asyncio.to_thread(
-        lambda: (traci.simulationStep(), traci.simulation.getTime())[1])
-    return {"simTime": sim_time}
-
-
 # Cache
 TL_IDS = []
 TL_PROGRAMS = []
@@ -87,13 +70,36 @@ async def init_tl_cache():
         })
 
 
+# ----------------------
+# SUMO control
+# ----------------------
+async def start_sumo():
+    traci.start(setup_sumo())
+
+
+# ----------------------
+# Endpoints
+# ----------------------
 @endpoint
-async def trafficlights(params=None):
-    for tl_dict in TL_CACHE:
+def step(params=None):
+    start = time.time()
+    traci.simulationStep()
+    return {"simTime": time.time() - start}
+
+
+@endpoint
+def trafficlights(params=None):
+    cache = TL_CACHE
+    for tl_dict in cache:
         tl = tl_dict["id"]
-        tl_dict["phaseIndex"] = traci.trafficlight.getPhase(tl)
-        tl_dict["phaseState"] = traci.trafficlight.getRedYellowGreenState(tl)
-    return {"trafficLights": TL_CACHE}
+        new_phase = traci.trafficlight.getPhase(tl)
+        if new_phase != tl_dict["phaseIndex"]:
+            tl_state = traci.trafficlight.getRedYellowGreenState(tl)
+            tl_dict.update({
+                "phaseIndex": new_phase,
+                "phaseState": tl_state
+            })
+    return {"trafficLights": cache}
 
 
 @endpoint
@@ -112,10 +118,15 @@ async def ws_handler(websocket):
     async for message in websocket:
         try:
             req = msgpack.unpackb(message, raw=False)
-            func = ENDPOINTS.get(req.get("endpoint"))
+            endpoint_name = req["endpoint"]
             params = req.get("params", {})
+            func = ENDPOINTS.get(endpoint_name)
+
             if func:
-                result = await func(params)
+                if asyncio.iscoroutinefunction(func):
+                    result = await func(params)
+                else:
+                    result = func(params)
             else:
                 result = {"error": "Unknown endpoint"}
         except Exception as e:
@@ -139,15 +150,14 @@ async def main():
         TL_CACHE.append({
             "id": tl,
             "program": TL_PROGRAMS[tl],
-            "phaseIndex": 0,
-            "phaseState": ""
+            "phaseIndex": traci.trafficlight.getPhase(tl),
+            "phaseState": traci.trafficlight.getRedYellowGreenState(tl)
         })
 
     server = await websockets.serve(ws_handler, "0.0.0.0", 5555)
     await server.wait_closed()
 
 if __name__ == "__main__":
-    uvloop.install()
     try:
         asyncio.run(main())
     except KeyboardInterrupt:

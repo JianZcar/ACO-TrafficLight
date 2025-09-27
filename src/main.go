@@ -1,6 +1,7 @@
 package main
 
 import (
+	// "os"
 	"fmt"
 	"github.com/gorilla/websocket"
 	"github.com/vmihailenco/msgpack/v5"
@@ -36,6 +37,10 @@ func SetupMiddleware() {
 	}
 
 	buildImage := exec.Command("podman", "build", "-t", imageName, containerfile)
+
+	// buildImage.Stdout = os.Stdout
+	// buildImage.Stderr = os.Stderr
+
 	doneBuildImage := make(chan struct{})
 	go Spinner("building image", doneBuildImage)
 
@@ -44,6 +49,7 @@ func SetupMiddleware() {
 		time.Sleep(100 * time.Millisecond)
 		log.Fatalf("failed to build image: %v", err)
 	}
+
 	close(doneBuildImage)
 	time.Sleep(100 * time.Millisecond)
 
@@ -54,6 +60,10 @@ func SetupMiddleware() {
 		"-p", "5555:5555",
 		imageName,
 	)
+
+	// runCmd.Stdout = os.Stdout
+	// runCmd.Stderr = os.Stderr
+
 	doneStartContainer := make(chan struct{})
 	go Spinner("starting container", doneStartContainer)
 
@@ -84,6 +94,10 @@ type TLSResponse struct {
 	TrafficLights []TrafficLight `msgpack:"trafficLights"`
 }
 
+type StepResponse struct {
+	SimTime float64 `msgpack:"simTime"`
+}
+
 func StepLoop(wsURL string, steps int) {
 	var conn *websocket.Conn
 	var err error
@@ -111,7 +125,8 @@ func StepLoop(wsURL string, steps int) {
 	log.Println("connected to WebSocket server")
 
 	for i := 0; i < steps; i++ {
-		// Send trafficlights request
+		// --- TrafficLights request timing ---
+		startTL := time.Now()
 		if err := conn.WriteMessage(websocket.BinaryMessage, tlMsg); err != nil {
 			log.Printf("failed to send trafficlights request: %v", err)
 			i--
@@ -126,6 +141,7 @@ func StepLoop(wsURL string, steps int) {
 			time.Sleep(500 * time.Millisecond)
 			continue
 		}
+		durationTL := time.Since(startTL)
 
 		var tls TLSResponse
 		if err := msgpack.Unmarshal(tlRespBytes, &tls); err != nil {
@@ -135,7 +151,8 @@ func StepLoop(wsURL string, steps int) {
 			continue
 		}
 
-		// Send step request
+		// --- Step request timing ---
+		startStep := time.Now()
 		if err := conn.WriteMessage(websocket.BinaryMessage, stepMsg); err != nil {
 			log.Printf("failed to send step request: %v", err)
 			i--
@@ -150,8 +167,9 @@ func StepLoop(wsURL string, steps int) {
 			time.Sleep(500 * time.Millisecond)
 			continue
 		}
+		durationStep := time.Since(startStep)
 
-		var stepResp map[string]any
+		var stepResp StepResponse
 		if err := msgpack.Unmarshal(stepRespBytes, &stepResp); err != nil {
 			log.Printf("failed to parse step response: %v", err)
 			i--
@@ -159,15 +177,17 @@ func StepLoop(wsURL string, steps int) {
 			continue
 		}
 
-		// Print
-		fmt.Printf("Step %d - TLS:\n", i+1)
+		fmt.Printf("Sim %.3f ms | Step %d %.3f ms | TrafficLights %.3f ms:\n",
+			stepResp.SimTime*1000, i+1,
+			float64(durationStep.Microseconds())/1000,
+			float64(durationTL.Microseconds())/1000)
+
 		for _, tl := range tls.TrafficLights {
 			fmt.Printf("  ID: %s | Program: %s | Phase: %d | State: %s\n",
 				tl.ID, tl.Program, tl.PhaseIndex, tl.PhaseState)
 		}
 	}
 
-	// Send stop request
 	if err := conn.WriteMessage(websocket.BinaryMessage, stopMsg); err != nil {
 		log.Printf("failed to send stop request: %v", err)
 		time.Sleep(500 * time.Millisecond)
