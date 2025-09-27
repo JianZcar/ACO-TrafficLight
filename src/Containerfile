@@ -5,7 +5,7 @@ RUN apt-get update && apt-get install -y \
     x11vnc xvfb websockify novnc \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir sumolib traci websockets
+RUN pip install --no-cache-dir websockets uvloop msgpack sumolib traci
 
 WORKDIR /server
 

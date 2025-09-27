@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"github.com/gorilla/websocket"
+	"github.com/vmihailenco/msgpack/v5"
 	"log"
 	"os/exec"
 	"path/filepath"
@@ -73,20 +74,26 @@ func SetupMiddleware() {
 // WebSocket Client
 // ----------------------------
 type TrafficLight struct {
-	ID         string `json:"id"`
-	Program    string `json:"program"`
-	PhaseIndex int    `json:"phaseIndex"`
-	PhaseState string `json:"phaseState"`
+	ID         string `msgpack:"id"`
+	Program    string `msgpack:"program"`
+	PhaseIndex int    `msgpack:"phaseIndex"`
+	PhaseState string `msgpack:"phaseState"`
 }
 
 type TLSResponse struct {
-	TrafficLights []TrafficLight `json:"trafficLights"`
+	TrafficLights []TrafficLight `msgpack:"trafficLights"`
 }
 
 func StepLoop(wsURL string, steps int) {
 	var conn *websocket.Conn
 	var err error
 
+	// Endpoints
+	tlReq := map[string]string{"endpoint": "trafficlights"}
+	stepReq := map[string]string{"endpoint": "step"}
+	stopReq := map[string]string{"endpoint": "stop"}
+
+	// Connect to WebSocket
 	for {
 		conn, _, err = websocket.DefaultDialer.Dial(wsURL, nil)
 		if err != nil {
@@ -100,38 +107,57 @@ func StepLoop(wsURL string, steps int) {
 	log.Println("connected to WebSocket server")
 
 	for i := 0; i < steps; i++ {
-		stepReq := map[string]string{"endpoint": "step"}
-		if err := conn.WriteJSON(stepReq); err != nil {
-			log.Printf("failed to send step request: %v", err)
-			i--
-			time.Sleep(500 * time.Millisecond)
-			continue
-		}
-
-		var stepResp map[string]any
-		if err := conn.ReadJSON(&stepResp); err != nil {
-			log.Printf("failed to read step response: %v", err)
-			i--
-			time.Sleep(500 * time.Millisecond)
-			continue
-		}
-
-		tlReq := map[string]string{"endpoint": "trafficlights"}
-		if err := conn.WriteJSON(tlReq); err != nil {
+		// Send trafficlights request
+		tlMsg, _ := msgpack.Marshal(tlReq)
+		if err := conn.WriteMessage(websocket.BinaryMessage, tlMsg); err != nil {
 			log.Printf("failed to send trafficlights request: %v", err)
 			i--
 			time.Sleep(500 * time.Millisecond)
 			continue
 		}
 
+		_, tlRespBytes, err := conn.ReadMessage()
+		if err != nil {
+			log.Printf("failed to read TLS response: %v", err)
+			i--
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
 		var tls TLSResponse
-		if err := conn.ReadJSON(&tls); err != nil {
+		if err := msgpack.Unmarshal(tlRespBytes, &tls); err != nil {
 			log.Printf("failed to parse TLS response: %v", err)
 			i--
 			time.Sleep(500 * time.Millisecond)
 			continue
 		}
 
+		// Send step request
+		stepMsg, _ := msgpack.Marshal(stepReq)
+		if err := conn.WriteMessage(websocket.BinaryMessage, stepMsg); err != nil {
+			log.Printf("failed to send step request: %v", err)
+			i--
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		_, stepRespBytes, err := conn.ReadMessage()
+		if err != nil {
+			log.Printf("failed to read step response: %v", err)
+			i--
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		var stepResp map[string]interface{}
+		if err := msgpack.Unmarshal(stepRespBytes, &stepResp); err != nil {
+			log.Printf("failed to parse step response: %v", err)
+			i--
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		// Print
 		fmt.Printf("Step %d - TLS:\n", i+1)
 		for _, tl := range tls.TrafficLights {
 			fmt.Printf("  ID: %s | Program: %s | Phase: %d | State: %s\n",
@@ -139,8 +165,9 @@ func StepLoop(wsURL string, steps int) {
 		}
 	}
 
-	stopReq := map[string]string{"endpoint": "stop"}
-	if err := conn.WriteJSON(stopReq); err != nil {
+	// Send stop request
+	stopMsg, _ := msgpack.Marshal(stopReq)
+	if err := conn.WriteMessage(websocket.BinaryMessage, stopMsg); err != nil {
 		log.Printf("failed to send stop request: %v", err)
 		time.Sleep(500 * time.Millisecond)
 	}

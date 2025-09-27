@@ -1,15 +1,14 @@
 import os
 import sys
-import json
 import traci
+import uvloop
 import asyncio
-import threading
+import msgpack
 import subprocess
 import websockets
 from typing import Callable, Dict
-from traci import TraCIException
 
-SIM_LOCK = threading.Lock()
+server = None
 
 # ----------------------
 # Endpoint registry
@@ -31,7 +30,7 @@ def setup_sumo() -> list:
     os.environ["DISPLAY"] = ":1"
     sumoBinary = "sumo-gui"  # "sumo" for headless
 
-    # build network
+    # Build network
     subprocess.run(
         [
             "netconvert",
@@ -43,6 +42,7 @@ def setup_sumo() -> list:
         check=True,
     )
 
+    # Keep your exact command
     return [
         sumoBinary,
         "--window-size", "1920,1080",
@@ -53,11 +53,16 @@ def setup_sumo() -> list:
     ]
 
 
-try:
-    traci.start(setup_sumo())
-    print("SUMO/TraCI started successfully.")
-except Exception as e:
-    print("Failed to start SUMO/TraCI:", e)
+# ----------------------
+# SUMO control
+# ----------------------
+async def start_sumo():
+    try:
+        traci.start(setup_sumo())
+        print("SUMO/TraCI started successfully.")
+    except Exception as e:
+        print("Failed to start SUMO/TraCI:", e)
+        sys.exit(1)
 
 
 # ----------------------
@@ -65,59 +70,35 @@ except Exception as e:
 # ----------------------
 @endpoint
 async def step(params=None):
-    def _step_blocking():
-        traci.simulationStep()
-        return traci.simulation.getTime()
-    sim_time = await asyncio.to_thread(_step_blocking)
+    traci.simulationStep()
+    sim_time = traci.simulation.getTime()
     return {"simTime": sim_time}
 
 
 @endpoint
 async def trafficlights(params=None):
-    def _trafficlights_blocking():
-        tl_ids = traci.trafficlight.getIDList()
-        tl_data = []
-
-        for tl in tl_ids:
-            try:
-                prog = traci.trafficlight.getProgram(tl)
-            except TraCIException:
-                prog = None
-
-            try:
-                phase_index = traci.trafficlight.getPhase(tl)
-            except TraCIException:
-                phase_index = None
-
-            try:
-                phase_state = traci.trafficlight.getRedYellowGreenState(tl)
-            except TraCIException:
-                phase_state = None
-
-            tl_data.append({
+    tl_ids = traci.trafficlight.getIDList()
+    return {
+        "trafficLights": [
+            {
                 "id": tl,
-                "program": prog,
-                "phaseIndex": phase_index,
-                "phaseState": phase_state
-            })
-
-        return {"trafficLights": tl_data}
-
-    sim_data = await asyncio.to_thread(_trafficlights_blocking)
-    return sim_data
+                "program": traci.trafficlight.getProgram(tl),
+                "phaseIndex": traci.trafficlight.getPhase(tl),
+                "phaseState": traci.trafficlight.getRedYellowGreenState(tl),
+            }
+            for tl in tl_ids
+        ]
+    }
 
 
 @endpoint
-def stop(params=None):
-    try:
-        traci.close()
-        print("Stopping server...")
-        if server:
-            asyncio.create_task(server.close())
-        asyncio.get_event_loop().call_later(0.1, sys.exit, 0)
-        return {"status": "stopping everything"}
-    except Exception as e:
-        return {"error": str(e)}
+async def stop(params=None):
+    traci.close()
+    print("Stopping server...")
+    if server:
+        await server.close()
+    asyncio.get_event_loop().call_later(0.1, sys.exit, 0)
+    return {"status": "stopping everything"}
 
 
 # ----------------------
@@ -126,30 +107,32 @@ def stop(params=None):
 async def ws_handler(websocket):
     async for message in websocket:
         try:
-            req = json.loads(message)
-            endpoint_name = req.get("endpoint")
+            req = msgpack.unpackb(message, raw=False)
+            func = ENDPOINTS.get(req.get("endpoint"))
             params = req.get("params", {})
-            func = ENDPOINTS.get(endpoint_name)
-
             if func:
-                if asyncio.iscoroutinefunction(func):
-                    result = await func(params)
-                else:
-                    result = await asyncio.to_thread(func, params)
+                result = await func(params)
             else:
-                result = {"error": f"Unknown endpoint: {endpoint_name}"}
+                result = {"error": "Unknown endpoint"}
         except Exception as e:
             result = {"error": str(e)}
 
-        await websocket.send(json.dumps(result))
+        await websocket.send(msgpack.packb(result, use_bin_type=True))
 
 
+# ----------------------
+# Main
+# ----------------------
 async def main():
     global server
+    await start_sumo()
     server = await websockets.serve(ws_handler, "0.0.0.0", 5555)
     print("WebSocket SUMO server listening on ws://0.0.0.0:5555")
     await server.wait_closed()
 
-
 if __name__ == "__main__":
-    asyncio.run(main())
+    uvloop.install()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Server stopped manually")
