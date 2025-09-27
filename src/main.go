@@ -93,6 +93,10 @@ func StepLoop(wsURL string, steps int) {
 	stepReq := map[string]string{"endpoint": "step"}
 	stopReq := map[string]string{"endpoint": "stop"}
 
+	stepMsg, _ := msgpack.Marshal(stepReq)
+	tlMsg, _ := msgpack.Marshal(tlReq)
+	stopMsg, _ := msgpack.Marshal(stopReq)
+
 	// Connect to WebSocket
 	for {
 		conn, _, err = websocket.DefaultDialer.Dial(wsURL, nil)
@@ -108,7 +112,6 @@ func StepLoop(wsURL string, steps int) {
 
 	for i := 0; i < steps; i++ {
 		// Send trafficlights request
-		tlMsg, _ := msgpack.Marshal(tlReq)
 		if err := conn.WriteMessage(websocket.BinaryMessage, tlMsg); err != nil {
 			log.Printf("failed to send trafficlights request: %v", err)
 			i--
@@ -133,7 +136,6 @@ func StepLoop(wsURL string, steps int) {
 		}
 
 		// Send step request
-		stepMsg, _ := msgpack.Marshal(stepReq)
 		if err := conn.WriteMessage(websocket.BinaryMessage, stepMsg); err != nil {
 			log.Printf("failed to send step request: %v", err)
 			i--
@@ -149,7 +151,7 @@ func StepLoop(wsURL string, steps int) {
 			continue
 		}
 
-		var stepResp map[string]interface{}
+		var stepResp map[string]any
 		if err := msgpack.Unmarshal(stepRespBytes, &stepResp); err != nil {
 			log.Printf("failed to parse step response: %v", err)
 			i--
@@ -166,7 +168,6 @@ func StepLoop(wsURL string, steps int) {
 	}
 
 	// Send stop request
-	stopMsg, _ := msgpack.Marshal(stopReq)
 	if err := conn.WriteMessage(websocket.BinaryMessage, stopMsg); err != nil {
 		log.Printf("failed to send stop request: %v", err)
 		time.Sleep(500 * time.Millisecond)

@@ -57,12 +57,7 @@ def setup_sumo() -> list:
 # SUMO control
 # ----------------------
 async def start_sumo():
-    try:
-        traci.start(setup_sumo())
-        print("SUMO/TraCI started successfully.")
-    except Exception as e:
-        print("Failed to start SUMO/TraCI:", e)
-        sys.exit(1)
+    traci.start(setup_sumo())
 
 
 # ----------------------
@@ -75,18 +70,22 @@ async def step(params=None):
     return {"simTime": sim_time}
 
 
+# Cache
+TL_IDS = []
+TL_PROGRAMS = []
+
+
 @endpoint
 async def trafficlights(params=None):
-    tl_ids = traci.trafficlight.getIDList()
     return {
         "trafficLights": [
             {
                 "id": tl,
-                "program": traci.trafficlight.getProgram(tl),
+                "program": TL_PROGRAMS[tl],
                 "phaseIndex": traci.trafficlight.getPhase(tl),
                 "phaseState": traci.trafficlight.getRedYellowGreenState(tl),
             }
-            for tl in tl_ids
+            for tl in TL_IDS
         ]
     }
 
@@ -94,7 +93,6 @@ async def trafficlights(params=None):
 @endpoint
 async def stop(params=None):
     traci.close()
-    print("Stopping server...")
     if server:
         await server.close()
     asyncio.get_event_loop().call_later(0.1, sys.exit, 0)
@@ -126,8 +124,14 @@ async def ws_handler(websocket):
 async def main():
     global server
     await start_sumo()
+
+    global TL_IDS
+    global TL_PROGRAMS
+
+    TL_IDS = traci.trafficlight.getIDList()
+    TL_PROGRAMS = {tl: traci.trafficlight.getProgram(tl) for tl in TL_IDS}
+
     server = await websockets.serve(ws_handler, "0.0.0.0", 5555)
-    print("WebSocket SUMO server listening on ws://0.0.0.0:5555")
     await server.wait_closed()
 
 if __name__ == "__main__":
