@@ -5,7 +5,7 @@ RUN apt-get update && apt-get install -y \
     x11vnc xvfb websockify novnc \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir sumolib traci fastapi uvicorn
+RUN pip install --no-cache-dir sumolib traci websockets
 
 WORKDIR /server
 
@@ -15,4 +15,3 @@ COPY sumo_config/ /server/sumo_config/
 EXPOSE 8080 5555
 
 CMD ["/server/start.sh"]
-

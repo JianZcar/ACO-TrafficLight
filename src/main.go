@@ -1,11 +1,9 @@
 package main
 
 import (
-	"bytes"
-	"encoding/json"
 	"fmt"
+	"github.com/gorilla/websocket"
 	"log"
-	"net/http"
 	"os/exec"
 	"path/filepath"
 	"time"
@@ -71,6 +69,9 @@ func SetupMiddleware() {
 	fmt.Println("middleware available at http://localhost:5555/")
 }
 
+// ----------------------------
+// WebSocket Client
+// ----------------------------
 type TrafficLight struct {
 	ID         string `json:"id"`
 	Program    string `json:"program"`
@@ -82,49 +83,70 @@ type TLSResponse struct {
 	TrafficLights []TrafficLight `json:"trafficLights"`
 }
 
-func StepLoop(middlewareURL string, steps int) {
-	client := &http.Client{Timeout: 5 * time.Second}
+func StepLoop(wsURL string, steps int) {
+	var conn *websocket.Conn
+	var err error
 
-	for i := 0; i < steps; {
-		resp, err := client.Post(
-			middlewareURL+"/step",
-			"application/json",
-			bytes.NewBuffer([]byte(`{}`)),
-		)
+	for {
+		conn, _, err = websocket.DefaultDialer.Dial(wsURL, nil)
 		if err != nil {
-			log.Printf("failed to send step request: %v", err)
-			time.Sleep(1 * time.Second)
-			continue // don’t increment i
-		}
-		resp.Body.Close()
-
-		i++
-
-		resp, err = client.Get(middlewareURL + "/trafficlights")
-		if err != nil {
-			log.Printf("failed to get TLS: %v", err)
+			log.Printf("failed to connect to WebSocket server: %v, retrying in 1s...", err)
 			time.Sleep(1 * time.Second)
 			continue
 		}
-		defer resp.Body.Close()
+		break
+	}
+	defer conn.Close()
+	log.Println("connected to WebSocket server")
+
+	for i := 0; i < steps; i++ {
+		stepReq := map[string]string{"endpoint": "step"}
+		if err := conn.WriteJSON(stepReq); err != nil {
+			log.Printf("failed to send step request: %v", err)
+			i--
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		var stepResp map[string]any
+		if err := conn.ReadJSON(&stepResp); err != nil {
+			log.Printf("failed to read step response: %v", err)
+			i--
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		tlReq := map[string]string{"endpoint": "trafficlights"}
+		if err := conn.WriteJSON(tlReq); err != nil {
+			log.Printf("failed to send trafficlights request: %v", err)
+			i--
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
 
 		var tls TLSResponse
-		if err := json.NewDecoder(resp.Body).Decode(&tls); err != nil {
+		if err := conn.ReadJSON(&tls); err != nil {
 			log.Printf("failed to parse TLS response: %v", err)
+			i--
+			time.Sleep(500 * time.Millisecond)
 			continue
 		}
 
-		fmt.Printf("Step %d - TLS:\n", i)
+		fmt.Printf("Step %d - TLS:\n", i+1)
 		for _, tl := range tls.TrafficLights {
 			fmt.Printf("  ID: %s | Program: %s | Phase: %d | State: %s\n",
 				tl.ID, tl.Program, tl.PhaseIndex, tl.PhaseState)
 		}
+	}
 
-		// time.Sleep(1 * time.Second)
+	stopReq := map[string]string{"endpoint": "stop"}
+	if err := conn.WriteJSON(stopReq); err != nil {
+		log.Printf("failed to send stop request: %v", err)
+		time.Sleep(500 * time.Millisecond)
 	}
 }
 
 func main() {
 	SetupMiddleware()
-	StepLoop("http://127.0.0.1:5555", 1000)
+	StepLoop("ws://127.0.0.1:5555", 1000)
 }
