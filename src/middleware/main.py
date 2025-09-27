@@ -1,12 +1,13 @@
-import websockets
-import asyncio
-import json
 import os
 import sys
-import subprocess
-import threading
+import json
 import traci
+import asyncio
+import threading
+import subprocess
+import websockets
 from typing import Callable, Dict
+from traci import TraCIException
 
 SIM_LOCK = threading.Lock()
 
@@ -63,37 +64,47 @@ except Exception as e:
 # Endpoints
 # ----------------------
 @endpoint
-def step(params=None):
-    with SIM_LOCK:
+async def step(params=None):
+    def _step_blocking():
         traci.simulationStep()
-        sim_time = traci.simulation.getTime()
+        return traci.simulation.getTime()
+    sim_time = await asyncio.to_thread(_step_blocking)
     return {"simTime": sim_time}
 
 
 @endpoint
-def trafficlights(params=None):
-    tl_ids = traci.trafficlight.getIDList()
-    tl_data = []
-    for tl in tl_ids:
-        try:
-            prog = traci.trafficlight.getProgram(tl)
-        except Exception:
-            prog = None
-        try:
-            phase_index = traci.trafficlight.getPhase(tl)
-        except Exception:
-            phase_index = None
-        try:
-            phase_state = traci.trafficlight.getRedYellowGreenState(tl)
-        except Exception:
-            phase_state = None
-        tl_data.append({
-            "id": tl,
-            "program": prog,
-            "phaseIndex": phase_index,
-            "phaseState": phase_state
-        })
-    return {"trafficLights": tl_data}
+async def trafficlights(params=None):
+    def _trafficlights_blocking():
+        tl_ids = traci.trafficlight.getIDList()
+        tl_data = []
+
+        for tl in tl_ids:
+            try:
+                prog = traci.trafficlight.getProgram(tl)
+            except TraCIException:
+                prog = None
+
+            try:
+                phase_index = traci.trafficlight.getPhase(tl)
+            except TraCIException:
+                phase_index = None
+
+            try:
+                phase_state = traci.trafficlight.getRedYellowGreenState(tl)
+            except TraCIException:
+                phase_state = None
+
+            tl_data.append({
+                "id": tl,
+                "program": prog,
+                "phaseIndex": phase_index,
+                "phaseState": phase_state
+            })
+
+        return {"trafficLights": tl_data}
+
+    sim_data = await asyncio.to_thread(_trafficlights_blocking)
+    return sim_data
 
 
 @endpoint
@@ -119,8 +130,12 @@ async def ws_handler(websocket):
             endpoint_name = req.get("endpoint")
             params = req.get("params", {})
             func = ENDPOINTS.get(endpoint_name)
+
             if func:
-                result = func(params)
+                if asyncio.iscoroutinefunction(func):
+                    result = await func(params)
+                else:
+                    result = await asyncio.to_thread(func, params)
             else:
                 result = {"error": f"Unknown endpoint: {endpoint_name}"}
         except Exception as e:
