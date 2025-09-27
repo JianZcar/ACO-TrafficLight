@@ -176,5 +176,5 @@ func StepLoop(wsURL string, steps int) {
 
 func main() {
 	SetupMiddleware()
-	StepLoop("ws://127.0.0.1:5555", 1000)
+	StepLoop("ws://127.0.0.1:5555", 10000)
 }

@@ -65,29 +65,35 @@ async def start_sumo():
 # ----------------------
 @endpoint
 async def step(params=None):
-    traci.simulationStep()
-    sim_time = traci.simulation.getTime()
+    sim_time = await asyncio.to_thread(
+        lambda: (traci.simulationStep(), traci.simulation.getTime())[1])
     return {"simTime": sim_time}
 
 
 # Cache
 TL_IDS = []
 TL_PROGRAMS = []
+TL_CACHE = []
+
+
+async def init_tl_cache():
+    global TL_CACHE
+    for tl in TL_IDS:
+        TL_CACHE.append({
+            "id": tl,
+            "program": TL_PROGRAMS[tl],
+            "phaseIndex": 0,
+            "phaseState": ""
+        })
 
 
 @endpoint
 async def trafficlights(params=None):
-    return {
-        "trafficLights": [
-            {
-                "id": tl,
-                "program": TL_PROGRAMS[tl],
-                "phaseIndex": traci.trafficlight.getPhase(tl),
-                "phaseState": traci.trafficlight.getRedYellowGreenState(tl),
-            }
-            for tl in TL_IDS
-        ]
-    }
+    for tl_dict in TL_CACHE:
+        tl = tl_dict["id"]
+        tl_dict["phaseIndex"] = traci.trafficlight.getPhase(tl)
+        tl_dict["phaseState"] = traci.trafficlight.getRedYellowGreenState(tl)
+    return {"trafficLights": TL_CACHE}
 
 
 @endpoint
@@ -122,14 +128,20 @@ async def ws_handler(websocket):
 # Main
 # ----------------------
 async def main():
-    global server
+    global server, TL_IDS, TL_PROGRAMS, TL_CACHE
     await start_sumo()
-
-    global TL_IDS
-    global TL_PROGRAMS
 
     TL_IDS = traci.trafficlight.getIDList()
     TL_PROGRAMS = {tl: traci.trafficlight.getProgram(tl) for tl in TL_IDS}
+
+    TL_CACHE = []
+    for tl in TL_IDS:
+        TL_CACHE.append({
+            "id": tl,
+            "program": TL_PROGRAMS[tl],
+            "phaseIndex": 0,
+            "phaseState": ""
+        })
 
     server = await websockets.serve(ws_handler, "0.0.0.0", 5555)
     await server.wait_closed()
