@@ -57,26 +57,6 @@ def setup_sumo() -> list:
 
 
 # ----------------------
-# Cache for traffic lights
-# ----------------------
-TL_IDS = []
-TL_PROGRAMS: Dict[str, str] = {}
-TL_CACHE = []
-
-
-async def init_tl_cache():
-    global TL_CACHE
-    TL_CACHE = []
-    for tl in TL_IDS:
-        TL_CACHE.append({
-            "id": tl,
-            "program": TL_PROGRAMS.get(tl),
-            "phaseIndex": 0,
-            "phaseState": ""
-        })
-
-
-# ----------------------
 # SUMO control
 # ----------------------
 async def start_sumo():
@@ -97,17 +77,74 @@ def step(params: Optional[dict] = None):
 
 @endpoint
 def trafficlights(params: Optional[dict] = None):
-    cache = TL_CACHE
-    for tl_dict in cache:
-        tl = tl_dict["id"]
-        new_phase = traci.trafficlight.getPhase(tl)
-        if new_phase != tl_dict["phaseIndex"]:
-            tl_state = traci.trafficlight.getRedYellowGreenState(tl)
-            tl_dict.update({
-                "phaseIndex": new_phase,
-                "phaseState": tl_state
+    result = []
+    try:
+        tl_ids = traci.trafficlight.getIDList()
+        for tl in tl_ids:
+            try:
+                phase_index = traci.trafficlight.getPhase(tl)
+                phase_state = traci.trafficlight.getRedYellowGreenState(tl)
+                program_id = traci.trafficlight.getProgram(tl)
+                try:
+                    phase_remaining = traci.trafficlight.getPhaseDuration(tl)
+                except Exception:
+                    phase_remaining = None
+                try:
+                    next_switch = traci.trafficlight.getNextSwitch(tl)
+                except Exception:
+                    next_switch = None
+
+                cycle = _build_tl_cycle(tl, program_id)
+
+                result.append({
+                    "id": tl,
+                    "program": program_id,
+                    "phaseIndex": phase_index,
+                    "phaseState": phase_state,
+                    "phaseRemaining": phase_remaining,
+                    "nextSwitch": next_switch,
+                    "cycle": cycle
+                })
+            except Exception as e:
+                result.append({"id": tl, "error": str(e)})
+
+    except Exception as e:
+        return {"error": str(e)}
+
+    return {"trafficLights": result}
+
+
+def _build_tl_cycle(tl_id: str, program_id: Optional[str]) -> dict:
+    """
+    Return the full cycle as a dict with 'program' and 'phases'.
+    Each phase is a dict with 'state' and 'duration'.
+    """
+    try:
+        logics = traci.trafficlight.getCompleteRedYellowGreenDefinition(
+                tl_id) or []
+        if not logics:
+            return {"program": program_id, "phases": []}
+
+        chosen = None
+        for logic in logics:
+            if getattr(logic, "programID", None) == program_id:
+                chosen = logic
+                break
+        if chosen is None:
+            chosen = logics[0]
+
+        phases = getattr(chosen, "phases", [])
+        cycle_phases = []
+        for ph in phases:
+            cycle_phases.append({
+                "state": getattr(ph, "state", ""),
+                "duration": float(getattr(ph, "duration", 0.0))
             })
-    return {"trafficLights": cache}
+
+        return {"program": program_id, "phases": cycle_phases}
+
+    except Exception as e:
+        return {"error": str(e)}
 
 
 @endpoint
@@ -297,19 +334,6 @@ async def main():
 
     # start SUMO first
     await start_sumo()
-
-    # initialize TL lists/cache
-    global TL_IDS, TL_PROGRAMS, TL_CACHE
-    TL_IDS = traci.trafficlight.getIDList()
-    TL_PROGRAMS = {tl: traci.trafficlight.getProgram(tl) for tl in TL_IDS}
-    TL_CACHE = []
-    for tl in TL_IDS:
-        TL_CACHE.append({
-            "id": tl,
-            "program": TL_PROGRAMS[tl],
-            "phaseIndex": traci.trafficlight.getPhase(tl),
-            "phaseState": traci.trafficlight.getRedYellowGreenState(tl)
-        })
 
     # create UDS server
     server = await asyncio.start_unix_server(handle_client, path=SOCKET_PATH)

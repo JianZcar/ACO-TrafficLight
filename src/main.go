@@ -14,11 +14,25 @@ import (
 // ----------------------------
 // Msg types
 // ----------------------------
+
+type TrafficLightPhase struct {
+	State    string  `msgpack:"state"`
+	Duration float64 `msgpack:"duration"`
+}
+
+type TrafficLightCycle struct {
+	ProgramID string              `msgpack:"program"`
+	Phases    []TrafficLightPhase `msgpack:"phases"`
+}
+
 type TrafficLight struct {
-	ID         string `msgpack:"id"`
-	Program    string `msgpack:"program"`
-	PhaseIndex int    `msgpack:"phaseIndex"`
-	PhaseState string `msgpack:"phaseState"`
+	ID             string            `msgpack:"id"`
+	Program        string            `msgpack:"program"`
+	PhaseIndex     int               `msgpack:"phaseIndex"`
+	PhaseState     string            `msgpack:"phaseState"`
+	PhaseRemaining float64           `msgpack:"phaseRemaining"`
+	NextSwitch     float64           `msgpack:"nextSwitch"`
+	Cycle          TrafficLightCycle `msgpack:"cycle"`
 }
 
 type TLSResponse struct {
@@ -142,6 +156,17 @@ func StepLoop(socketPath string, steps int) {
 			continue
 		}
 
+		fmt.Printf("TrafficLights: \n")
+		for _, tl := range tls.TrafficLights {
+			fmt.Printf("  ID: %s | Program: %s | Phase: %d | State: %s\n  ⮩ Cycle: ",
+				tl.ID, tl.Program, tl.PhaseIndex, tl.PhaseState)
+
+			for i, ph := range tl.Cycle.Phases {
+				fmt.Printf("[%d] %s (%.1fs) ", i, ph.State, ph.Duration)
+			}
+			fmt.Println()
+		}
+
 		if len(tls.TrafficLights) == 0 {
 		} else {
 			firstTL := tls.TrafficLights[0]
@@ -157,7 +182,6 @@ func StepLoop(socketPath string, steps int) {
 			// send request
 			if err := sendMsg(conn, jMsg); err != nil {
 				log.Printf("failed to send junction_lanes request for %s: %v", firstTL.ID, err)
-				// don't try to read reply; continue outer loop
 				continue
 			}
 
@@ -245,15 +269,11 @@ func StepLoop(socketPath string, steps int) {
 		}
 
 		// --- Print results (same as before) ---
-		fmt.Printf("Sim %.3f ms | Step %d %.3f ms | TrafficLights %.3f ms:\n",
+		fmt.Printf("Sim %.3f ms | Step Request %d %.3f ms | TrafficLights Request %.3f\n",
 			stepResp.SimTime*1000, i+1,
 			float64(durationStep.Microseconds())/1000,
 			float64(durationTL.Microseconds())/1000)
 
-		for _, tl := range tls.TrafficLights {
-			fmt.Printf("  ID: %s | Program: %s | Phase: %d | State: %s\n",
-				tl.ID, tl.Program, tl.PhaseIndex, tl.PhaseState)
-		}
 	}
 
 	// send stop
