@@ -74,7 +74,7 @@ func connectUDS(socketPath string) net.Conn {
 }
 
 // ----------------------------
-// Step loop (UDS) - loop unchanged
+// Step loop (UDS)
 // ----------------------------
 func StepLoop(socketPath string, steps int) {
 	// Requests (msgpack-encoded)
