@@ -1,84 +1,12 @@
 package main
 
 import (
-	// "os"
 	"fmt"
 	"github.com/gorilla/websocket"
 	"github.com/vmihailenco/msgpack/v5"
 	"log"
-	"os/exec"
-	"path/filepath"
 	"time"
 )
-
-func Spinner(message string, done <-chan struct{}) {
-	spinner := []rune{'⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'}
-	i := 0
-	for {
-		select {
-		case <-done:
-			fmt.Printf("\r\033[2K")
-			fmt.Println("done " + message)
-			return
-		default:
-			fmt.Printf("\r%s %c", message, spinner[i%len(spinner)])
-			i++
-			time.Sleep(100 * time.Millisecond)
-		}
-	}
-}
-
-func SetupMiddleware() {
-	imageName := "sumo-middleware"
-
-	containerfile, err := filepath.Abs("./src")
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	buildImage := exec.Command("podman", "build", "-t", imageName, containerfile)
-
-	// buildImage.Stdout = os.Stdout
-	// buildImage.Stderr = os.Stderr
-
-	doneBuildImage := make(chan struct{})
-	go Spinner("building image", doneBuildImage)
-
-	if err := buildImage.Run(); err != nil {
-		close(doneBuildImage)
-		time.Sleep(100 * time.Millisecond)
-		log.Fatalf("failed to build image: %v", err)
-	}
-
-	close(doneBuildImage)
-	time.Sleep(100 * time.Millisecond)
-
-	runCmd := exec.Command("podman", "run",
-		"--rm",
-		"-d",
-		"-p", "8080:8080",
-		"-p", "5555:5555",
-		imageName,
-	)
-
-	// runCmd.Stdout = os.Stdout
-	// runCmd.Stderr = os.Stderr
-
-	doneStartContainer := make(chan struct{})
-	go Spinner("starting container", doneStartContainer)
-
-	if err := runCmd.Run(); err != nil {
-		close(doneStartContainer)
-		time.Sleep(100 * time.Millisecond)
-		log.Fatalf("failed to run container: %v", err)
-	}
-	close(doneStartContainer)
-	time.Sleep(100 * time.Millisecond)
-
-	fmt.Println("container is running")
-	fmt.Println("access GUI at http://localhost:8080/vnc.html?autoconnect=1")
-	fmt.Println("middleware available at http://localhost:5555/")
-}
 
 // ----------------------------
 // WebSocket Client
@@ -195,6 +123,5 @@ func StepLoop(wsURL string, steps int) {
 }
 
 func main() {
-	SetupMiddleware()
 	StepLoop("ws://127.0.0.1:5555", 10000)
 }

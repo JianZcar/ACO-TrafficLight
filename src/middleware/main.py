@@ -34,10 +34,10 @@ def setup_sumo() -> list:
     subprocess.run(
         [
             "netconvert",
-            "-n", "sumo_config/nodes.xml",
-            "-e", "sumo_config/edges.xml",
-            "-x", "sumo_config/connections.xml",
-            "-o", "sumo_config/net.xml",
+            "-n", "./src/sumo_config/nodes.xml",
+            "-e", "./src/sumo_config/edges.xml",
+            "-x", "./src/sumo_config/connections.xml",
+            "-o", "./src/sumo_config/net.xml",
         ],
         check=True,
     )
@@ -47,7 +47,7 @@ def setup_sumo() -> list:
         sumoBinary,
         "--window-size", "1920,1080",
         "--window-pos", "0,0",
-        "-c", "sumo_config/config.sumocfg",
+        "-c", "./src/sumo_config/config.sumocfg",
         "--start",
         "--quit-on-end",
     ]
