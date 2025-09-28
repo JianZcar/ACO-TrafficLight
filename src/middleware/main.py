@@ -4,6 +4,7 @@ import time
 import traci
 import asyncio
 import msgpack
+import itertools
 import subprocess
 from typing import Callable, Dict, Optional
 
@@ -107,6 +108,83 @@ def trafficlights(params: Optional[dict] = None):
                 "phaseState": tl_state
             })
     return {"trafficLights": cache}
+
+
+@endpoint
+def junction_lanes(params: Optional[dict] = None):
+    params = params or {}
+    jid = params.get("junction_id") or params.get(
+        "junction") or params.get("jid")
+    if not jid:
+        return {"error": "junction_id required"}
+    try:
+        incoming_lanes = _get_incoming_lanes(jid)
+        incoming_edges = sorted(
+            {ln.rsplit("_", 1)[0] for ln in incoming_lanes if "_" in ln})
+        lanes_with_links = [_lane_with_links(ln) for ln in incoming_lanes]
+
+        return {
+            "junction_id": jid,
+            "incoming_edges": incoming_edges,
+            "incoming_lanes": lanes_with_links,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _get_incoming_lanes(jid: str) -> list[str]:
+    """Try controlled lanes first, fallback to scanning edges/lanes."""
+    try:
+        lanes = traci.trafficlight.getControlledLanes(jid) or []
+        return list(dict.fromkeys(lanes))
+    except Exception:
+        pass
+
+    try:
+        edges = traci.edge.getIDList()
+        all_lanes = traci.lane.getIDList()
+    except Exception as e:
+        raise RuntimeError(f"traci_error: {e}")
+
+    incoming_edges = [e for e in edges if traci.edge.getToJunction(e) == jid]
+    incoming_lanes = itertools.chain.from_iterable(
+        (ln for ln in all_lanes if ln.startswith(e + "_")
+         ) for e in incoming_edges
+    )
+
+    return list(dict.fromkeys(incoming_lanes))
+
+
+def _lane_with_links(ln: str) -> dict:
+    """Return lane and its connected lanes."""
+    try:
+        links = traci.lane.getLinks(ln) or []
+        linked_lanes = [lk[0] for lk in links]
+    except Exception:
+        linked_lanes = []
+    return {"lane": ln, "links_to": linked_lanes}
+
+
+@endpoint
+def evaluate_lane(params: Optional[dict] = None):
+    """
+    Request:
+      {"lane": "w_in"}
+
+    Response:
+      {"lane": "w_in", "queue": 3, "wait": 12.0}
+    """
+    params = params or {}
+    lane = params.get("lane")
+    if not lane:
+        return {"error": "lane required"}
+
+    try:
+        q = traci.lane.getLastStepVehicleNumber(lane)
+        w = traci.lane.getWaitingTime(lane)
+        return {"lane": lane, "queue": int(q), "wait": float(w)}
+    except Exception as e:
+        return {"lane": lane, "error": str(e)}
 
 
 @endpoint

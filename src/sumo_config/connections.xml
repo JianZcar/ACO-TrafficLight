@@ -1,13 +1,13 @@
 <connections>
     <!-- East_in (E → J0) -->
-    <connection from="E_in" to="W_out" fromLane="0" toLane="0"/> <!-- Straight -->
-    <connection from="E_in" to="S_out" fromLane="1" toLane="1"/> <!-- Left turn to South -->
+    <connection from="E_in" to="S_out" fromLane="0" toLane="0"/> <!-- Right turn to South -->
+    <connection from="E_in" to="W_out" fromLane="1" toLane="1"/> <!-- Straight -->
 
     <!-- West_in (W → J0) -->
-    <connection from="W_in" to="E_out" fromLane="1" toLane="1"/> <!-- Straight -->
-    <connection from="W_in" to="S_out" fromLane="0" toLane="0"/> <!-- Right turn to South -->
+    <connection from="W_in" to="E_out" fromLane="0" toLane="0"/> <!-- Straight -->
+    <connection from="W_in" to="S_out" fromLane="1" toLane="1"/> <!-- Left turn to South -->
 
     <!-- South_in (S → J0) -->
-    <connection from="S_in" to="E_out" fromLane="0" toLane="0"/> <!-- Left turn to East -->
-    <connection from="S_in" to="W_out" fromLane="1" toLane="1"/> <!-- Right turn to West -->
+    <connection from="S_in" to="E_out" fromLane="1" toLane="1"/> <!-- Left turn to East -->
+    <connection from="S_in" to="W_out" fromLane="0" toLane="0"/> <!-- Right turn to West -->
 </connections>

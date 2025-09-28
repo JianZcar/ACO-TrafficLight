@@ -29,6 +29,23 @@ type StepResponse struct {
 	SimTime float64 `msgpack:"simTime"`
 }
 
+type IncomingLane struct {
+	Lane    string   `msgpack:"lane"`
+	LinksTo []string `msgpack:"links_to"`
+}
+
+type JunctionLanesResponse struct {
+	JunctionID    string         `msgpack:"junction_id"`
+	IncomingEdges []string       `msgpack:"incoming_edges"`
+	IncomingLanes []IncomingLane `msgpack:"incoming_lanes"`
+}
+
+type EvaluateLaneResponse struct {
+	Lane  string  `msgpack:"lane"`
+	Queue int     `msgpack:"queue"`
+	Wait  float64 `msgpack:"wait"`
+}
+
 // ----------------------------
 // Framing helpers (4-byte BE len + msgpack body)
 // ----------------------------
@@ -123,6 +140,78 @@ func StepLoop(socketPath string, steps int) {
 			i-- // retry same iteration
 			time.Sleep(500 * time.Millisecond)
 			continue
+		}
+
+		if len(tls.TrafficLights) == 0 {
+		} else {
+			firstTL := tls.TrafficLights[0]
+
+			jReq := map[any]any{
+				"endpoint": "junction_lanes",
+				"params": map[string]any{
+					"junction_id": firstTL.ID,
+				},
+			}
+			jMsg, _ := msgpack.Marshal(jReq)
+
+			// send request
+			if err := sendMsg(conn, jMsg); err != nil {
+				log.Printf("failed to send junction_lanes request for %s: %v", firstTL.ID, err)
+				// don't try to read reply; continue outer loop
+				continue
+			}
+
+			// read response
+			jRespBytes, err := readMsg(conn)
+			if err != nil {
+				log.Printf("failed to read junction_lanes response for %s: %v", firstTL.ID, err)
+				continue
+			}
+
+			// unmarshal into typed struct
+			var jResp JunctionLanesResponse
+			if err := msgpack.Unmarshal(jRespBytes, &jResp); err != nil {
+				log.Printf("failed to parse junction_lanes response for %s: %v", firstTL.ID, err)
+				continue
+			}
+
+			// print summary
+			fmt.Printf("Junction lanes for %s: %+v\n", jResp.JunctionID, jResp)
+
+			// loop all incoming lanes and evaluate each one (flat control flow)
+			for _, in := range jResp.IncomingLanes {
+				laneID := in.Lane
+
+				evalReq := map[any]any{
+					"endpoint": "evaluate_lane",
+					"params": map[string]any{
+						"lane": laneID,
+					},
+				}
+				evalMsg, _ := msgpack.Marshal(evalReq)
+
+				if err := sendMsg(conn, evalMsg); err != nil {
+					log.Printf("failed to send evaluate_lane for %s: %v", laneID, err)
+					// go to next lane
+					continue
+				}
+
+				evalRespBytes, err := readMsg(conn)
+				if err != nil {
+					log.Printf("failed to read evaluate_lane response for %s: %v", laneID, err)
+					continue
+				}
+
+				var evalResp EvaluateLaneResponse
+				if err := msgpack.Unmarshal(evalRespBytes, &evalResp); err != nil {
+					log.Printf("failed to parse evaluate_lane response for %s: %v", laneID, err)
+					continue
+				}
+
+				// print lane evaluation (flat)
+				fmt.Printf("    Lane %s | queue=%d wait=%.2f | links_to=%v\n",
+					evalResp.Lane, evalResp.Queue, evalResp.Wait, in.LinksTo)
+			}
 		}
 
 		// --- Step request timing ---
