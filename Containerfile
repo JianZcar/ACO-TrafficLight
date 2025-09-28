@@ -18,7 +18,7 @@ RUN wget https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz \
     && rm go${GO_VERSION}.linux-amd64.tar.gz
 
 RUN pypy3 -m venv /opt/pypy-venv
-RUN /opt/pypy-venv/bin/pip install --no-cache-dir websockets msgpack sumolib traci
+RUN /opt/pypy-venv/bin/pip install --no-cache-dir msgpack sumolib traci
 
 COPY ./src/ ./src/
 COPY ./go.mod ./go.mod

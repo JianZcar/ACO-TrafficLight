@@ -1,15 +1,18 @@
 package main
 
 import (
+	"encoding/binary"
 	"fmt"
-	"github.com/gorilla/websocket"
-	"github.com/vmihailenco/msgpack/v5"
+	"io"
 	"log"
+	"net"
 	"time"
+
+	"github.com/vmihailenco/msgpack/v5"
 )
 
 // ----------------------------
-// WebSocket Client
+// Msg types
 // ----------------------------
 type TrafficLight struct {
 	ID         string `msgpack:"id"`
@@ -26,46 +29,89 @@ type StepResponse struct {
 	SimTime float64 `msgpack:"simTime"`
 }
 
-func StepLoop(wsURL string, steps int) {
-	var conn *websocket.Conn
-	var err error
+// ----------------------------
+// Framing helpers (4-byte BE len + msgpack body)
+// ----------------------------
+func sendMsg(conn net.Conn, payload []byte) error {
+	var hdr [4]byte
+	binary.BigEndian.PutUint32(hdr[:], uint32(len(payload)))
+	if _, err := conn.Write(hdr[:]); err != nil {
+		return err
+	}
+	_, err := conn.Write(payload)
+	return err
+}
 
-	// Endpoints
+func readMsg(conn net.Conn) ([]byte, error) {
+	var hdr [4]byte
+	if _, err := io.ReadFull(conn, hdr[:]); err != nil {
+		return nil, err
+	}
+	length := binary.BigEndian.Uint32(hdr[:])
+	if length == 0 {
+		return nil, nil
+	}
+	buf := make([]byte, length)
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		return nil, err
+	}
+	return buf, nil
+}
+
+// ----------------------------
+// Connect helper
+// ----------------------------
+func connectUDS(socketPath string) net.Conn {
+	for {
+		conn, err := net.Dial("unix", socketPath)
+		if err != nil {
+			log.Printf("failed to connect to UDS %s: %v — retrying in 1s...", socketPath, err)
+			time.Sleep(1 * time.Second)
+			continue
+		}
+		return conn
+	}
+}
+
+// ----------------------------
+// Step loop (UDS) - loop unchanged
+// ----------------------------
+func StepLoop(socketPath string, steps int) {
+	// Requests (msgpack-encoded)
 	tlReq := map[string]string{"endpoint": "trafficlights"}
 	stepReq := map[string]string{"endpoint": "step"}
 	stopReq := map[string]string{"endpoint": "stop"}
 
-	stepMsg, _ := msgpack.Marshal(stepReq)
 	tlMsg, _ := msgpack.Marshal(tlReq)
+	stepMsg, _ := msgpack.Marshal(stepReq)
 	stopMsg, _ := msgpack.Marshal(stopReq)
 
-	// Connect to WebSocket
-	for {
-		conn, _, err = websocket.DefaultDialer.Dial(wsURL, nil)
-		if err != nil {
-			log.Printf("failed to connect to WebSocket server: %v, retrying in 1s...", err)
-			time.Sleep(1 * time.Second)
-			continue
+	conn := connectUDS(socketPath)
+	defer func() {
+		if conn != nil {
+			conn.Close()
 		}
-		break
-	}
-	defer conn.Close()
-	log.Println("connected to WebSocket server")
+	}()
+	log.Println("connected to UDS server")
 
 	for i := 0; i < steps; i++ {
 		// --- TrafficLights request timing ---
 		startTL := time.Now()
-		if err := conn.WriteMessage(websocket.BinaryMessage, tlMsg); err != nil {
-			log.Printf("failed to send trafficlights request: %v", err)
-			i--
+		if err := sendMsg(conn, tlMsg); err != nil {
+			log.Printf("failed to send trafficlights request: %v — reconnecting...", err)
+			conn.Close()
+			conn = connectUDS(socketPath)
+			i-- // retry same iteration
 			time.Sleep(500 * time.Millisecond)
 			continue
 		}
 
-		_, tlRespBytes, err := conn.ReadMessage()
+		tlRespBytes, err := readMsg(conn)
 		if err != nil {
-			log.Printf("failed to read TLS response: %v", err)
-			i--
+			log.Printf("failed to read TLS response: %v — reconnecting...", err)
+			conn.Close()
+			conn = connectUDS(socketPath)
+			i-- // retry same iteration
 			time.Sleep(500 * time.Millisecond)
 			continue
 		}
@@ -73,25 +119,29 @@ func StepLoop(wsURL string, steps int) {
 
 		var tls TLSResponse
 		if err := msgpack.Unmarshal(tlRespBytes, &tls); err != nil {
-			log.Printf("failed to parse TLS response: %v", err)
-			i--
+			log.Printf("failed to parse TLS response: %v — retrying iteration...", err)
+			i-- // retry same iteration
 			time.Sleep(500 * time.Millisecond)
 			continue
 		}
 
 		// --- Step request timing ---
 		startStep := time.Now()
-		if err := conn.WriteMessage(websocket.BinaryMessage, stepMsg); err != nil {
-			log.Printf("failed to send step request: %v", err)
-			i--
+		if err := sendMsg(conn, stepMsg); err != nil {
+			log.Printf("failed to send step request: %v — reconnecting...", err)
+			conn.Close()
+			conn = connectUDS(socketPath)
+			i-- // retry same iteration
 			time.Sleep(500 * time.Millisecond)
 			continue
 		}
 
-		_, stepRespBytes, err := conn.ReadMessage()
+		stepRespBytes, err := readMsg(conn)
 		if err != nil {
-			log.Printf("failed to read step response: %v", err)
-			i--
+			log.Printf("failed to read step response: %v — reconnecting...", err)
+			conn.Close()
+			conn = connectUDS(socketPath)
+			i-- // retry same iteration
 			time.Sleep(500 * time.Millisecond)
 			continue
 		}
@@ -99,12 +149,13 @@ func StepLoop(wsURL string, steps int) {
 
 		var stepResp StepResponse
 		if err := msgpack.Unmarshal(stepRespBytes, &stepResp); err != nil {
-			log.Printf("failed to parse step response: %v", err)
-			i--
+			log.Printf("failed to parse step response: %v — retrying iteration...", err)
+			i-- // retry same iteration
 			time.Sleep(500 * time.Millisecond)
 			continue
 		}
 
+		// --- Print results (same as before) ---
 		fmt.Printf("Sim %.3f ms | Step %d %.3f ms | TrafficLights %.3f ms:\n",
 			stepResp.SimTime*1000, i+1,
 			float64(durationStep.Microseconds())/1000,
@@ -116,12 +167,14 @@ func StepLoop(wsURL string, steps int) {
 		}
 	}
 
-	if err := conn.WriteMessage(websocket.BinaryMessage, stopMsg); err != nil {
-		log.Printf("failed to send stop request: %v", err)
-		time.Sleep(500 * time.Millisecond)
+	// send stop
+	if conn != nil {
+		if err := sendMsg(conn, stopMsg); err != nil {
+			log.Printf("failed to send stop request: %v", err)
+		}
 	}
 }
 
 func main() {
-	StepLoop("ws://127.0.0.1:5555", 10000)
+	StepLoop("/tmp/sumo_bridge.sock", 10000)
 }

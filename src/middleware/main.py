@@ -5,10 +5,12 @@ import traci
 import asyncio
 import msgpack
 import subprocess
-import websockets
-from typing import Callable, Dict
+from typing import Callable, Dict, Optional
 
-server = None
+# ----------------------
+# Configuration
+# ----------------------
+SOCKET_PATH = "/tmp/sumo_bridge.sock"  # change as needed
 
 # ----------------------
 # Endpoint registry
@@ -28,9 +30,9 @@ def setup_sumo() -> list:
     os.environ["SUMO_HOME"] = "/usr/share/sumo"
     sys.path.append(os.path.join(os.environ["SUMO_HOME"], "tools"))
     os.environ["DISPLAY"] = ":1"
-    sumoBinary = "sumo-gui"  # "sumo" for headless
+    sumoBinary = "sumo-gui"  # or "sumo" for headless
 
-    # Build network
+    # Build network (adjust paths as needed)
     subprocess.run(
         [
             "netconvert",
@@ -42,7 +44,7 @@ def setup_sumo() -> list:
         check=True,
     )
 
-    # Keep your exact command
+    # Keep exact command for sumo
     return [
         sumoBinary,
         "--window-size", "1920,1080",
@@ -53,18 +55,21 @@ def setup_sumo() -> list:
     ]
 
 
-# Cache
+# ----------------------
+# Cache for traffic lights
+# ----------------------
 TL_IDS = []
-TL_PROGRAMS = []
+TL_PROGRAMS: Dict[str, str] = {}
 TL_CACHE = []
 
 
 async def init_tl_cache():
     global TL_CACHE
+    TL_CACHE = []
     for tl in TL_IDS:
         TL_CACHE.append({
             "id": tl,
-            "program": TL_PROGRAMS[tl],
+            "program": TL_PROGRAMS.get(tl),
             "phaseIndex": 0,
             "phaseState": ""
         })
@@ -74,6 +79,8 @@ async def init_tl_cache():
 # SUMO control
 # ----------------------
 async def start_sumo():
+    # This starts SUMO (blocking call inside async startup).
+    # If start is slow it's OK — it happens once at startup.
     traci.start(setup_sumo())
 
 
@@ -81,14 +88,14 @@ async def start_sumo():
 # Endpoints
 # ----------------------
 @endpoint
-def step(params=None):
+def step(params: Optional[dict] = None):
     start = time.time()
     traci.simulationStep()
     return {"simTime": time.time() - start}
 
 
 @endpoint
-def trafficlights(params=None):
+def trafficlights(params: Optional[dict] = None):
     cache = TL_CACHE
     for tl_dict in cache:
         tl = tl_dict["id"]
@@ -103,48 +110,120 @@ def trafficlights(params=None):
 
 
 @endpoint
-async def stop(params=None):
-    traci.close()
-    if server:
-        await server.close()
-    asyncio.get_event_loop().call_later(0.1, sys.exit, 0)
-    return {"status": "stopping everything"}
+async def stop(params: Optional[dict] = None):
+    # Ask server to close. The server will actually be closed by calling
+    # server.close() on the server object (set in main). Here we close traci
+    # and return an immediate confirmation.
+    # The main loop will handle server close.
+    try:
+        traci.close()
+    except Exception:
+        pass
+    # Returning a message; main() should close the server after handling this.
+    return {"status": "stopping"}
 
 
 # ----------------------
-# WebSocket server
+# Helpers: length-prefixed framing
 # ----------------------
-async def ws_handler(websocket):
-    async for message in websocket:
-        try:
-            req = msgpack.unpackb(message, raw=False)
-            endpoint_name = req["endpoint"]
-            params = req.get("params", {})
-            func = ENDPOINTS.get(endpoint_name)
+async def read_exact(reader: asyncio.StreamReader, n: int) -> bytes:
+    """Read exactly n bytes or raise EOFError."""
+    data = await reader.readexactly(n)
+    return data
 
-            if func:
-                if asyncio.iscoroutinefunction(func):
-                    result = await func(params)
+
+async def read_message(reader: asyncio.StreamReader) -> dict:
+    """Read a single length-prefixed msgpack message."""
+    # header: 4 bytes big-endian length
+    hdr = await read_exact(reader, 4)
+    length = int.from_bytes(hdr, "big")
+    if length <= 0:
+        raise ValueError("Invalid message length")
+    body = await read_exact(reader, length)
+    return msgpack.unpackb(body, raw=False)
+
+
+async def send_message(writer: asyncio.StreamWriter, obj: dict):
+    payload = msgpack.packb(obj, use_bin_type=True)
+    writer.write(len(payload).to_bytes(4, "big") + payload)
+    await writer.drain()
+
+
+# ----------------------
+# Client handler
+# ----------------------
+async def handle_client(reader: asyncio.StreamReader,
+                        writer: asyncio.StreamWriter):
+    peername = getattr(writer.get_extra_info("peername"),
+                       "__str__", lambda: "uds_client")()
+    print(f"Client connected: {peername}")
+    try:
+        while True:
+            try:
+                req = await read_message(reader)
+            except asyncio.IncompleteReadError:
+                # client closed connection
+                break
+            except Exception as e:
+                # Send back an error and continue
+                err = {"error": f"recv_error: {str(e)}"}
+                await send_message(writer, err)
+                continue
+
+            # Process request
+            try:
+                endpoint_name = req.get("endpoint")
+                params = req.get("params", {})
+                func = ENDPOINTS.get(endpoint_name)
+                if func:
+                    if asyncio.iscoroutinefunction(func):
+                        result = await func(params)
+                    else:
+                        result = func(params)
                 else:
-                    result = func(params)
-            else:
-                result = {"error": "Unknown endpoint"}
-        except Exception as e:
-            result = {"error": str(e)}
+                    result = {"error": "Unknown endpoint"}
+            except Exception as e:
+                result = {"error": str(e)}
 
-        await websocket.send(msgpack.packb(result, use_bin_type=True))
+            # Send response
+            try:
+                await send_message(writer, result)
+            except Exception as e:
+                print("Failed to send response:", e)
+                break
+
+            # If the endpoint was stop — close server after replying
+            if req.get("endpoint") == "stop":
+                # let main() handle server shutdown; break connection loop
+                break
+
+    finally:
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except Exception:
+            pass
+        print("Client disconnected")
 
 
 # ----------------------
 # Main
 # ----------------------
 async def main():
-    global server, TL_IDS, TL_PROGRAMS, TL_CACHE
+    # ensure old socket removed
+    try:
+        if os.path.exists(SOCKET_PATH):
+            os.remove(SOCKET_PATH)
+    except Exception as e:
+        print("Warning: couldn't remove existing socket:", e)
+
+    # start SUMO first
     await start_sumo()
 
+    # initialize TL lists/cache
+    global TL_IDS, TL_PROGRAMS, TL_CACHE
     TL_IDS = traci.trafficlight.getIDList()
     TL_PROGRAMS = {tl: traci.trafficlight.getProgram(tl) for tl in TL_IDS}
-
     TL_CACHE = []
     for tl in TL_IDS:
         TL_CACHE.append({
@@ -154,11 +233,34 @@ async def main():
             "phaseState": traci.trafficlight.getRedYellowGreenState(tl)
         })
 
-    server = await websockets.serve(ws_handler, "0.0.0.0", 5555)
-    await server.wait_closed()
+    # create UDS server
+    server = await asyncio.start_unix_server(handle_client, path=SOCKET_PATH)
+    print(f"UDS server listening on {SOCKET_PATH}")
+
+    try:
+        # Serve forever until stopped (stop endpoint or KeyboardInterrupt)
+        await server.serve_forever()
+    except asyncio.CancelledError:
+        pass
+    finally:
+        # cleanup
+        try:
+            server.close()
+            await server.wait_closed()
+        except Exception:
+            pass
+        try:
+            if os.path.exists(SOCKET_PATH):
+                os.remove(SOCKET_PATH)
+        except Exception:
+            pass
+        print("Server shut down")
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         print("Server stopped manually")
+    except Exception as e:
+        print("Fatal error:", e)
+        raise
