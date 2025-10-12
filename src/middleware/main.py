@@ -6,7 +6,7 @@ import asyncio
 import msgpack
 import itertools
 import subprocess
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, Any
 
 # ----------------------
 # Configuration
@@ -121,7 +121,7 @@ def _build_tl_cycle(tl_id: str, program_id: Optional[str]) -> dict:
     """
     try:
         logics = traci.trafficlight.getCompleteRedYellowGreenDefinition(
-                tl_id) or []
+            tl_id) or []
         if not logics:
             return {"program": program_id, "phases": []}
 
@@ -222,6 +222,178 @@ def evaluate_lane(params: Optional[dict] = None):
         return {"lane": lane, "queue": int(q), "wait": float(w)}
     except Exception as e:
         return {"lane": lane, "error": str(e)}
+
+
+@endpoint
+def setphase(params: Optional[dict] = None) -> Dict[str, Any]:
+    params = params or {}
+    tl = params.get("tl") or params.get("tl_id") or params.get("traffic_light")
+    if not tl:
+        return {"error": "tl (traffic light id) required"}
+
+    phase_index = params.get("phase_index")
+    phase_state = params.get("phase_state")
+    duration = params.get("duration")
+    safe = bool(params.get("safe", False))
+    amber_index = params.get("amber_index")
+    amber_duration = float(params.get("amber_duration", 3))
+
+    try:
+        tl_ids = traci.trafficlight.getIDList()
+        if tl not in tl_ids:
+            return {"error": f"traffic light '{tl}' not found",
+                    "known_tls": tl_ids}
+
+        if phase_index is None and phase_state:
+            found = _resolve_phase_index(tl, phase_state)
+            if found is None:
+                return {"error": "phase_state not found in TL cycle",
+                        "requested_state": phase_state}
+            phase_index = found
+
+        if phase_index is None:
+            return {"error": "phase_index or phase_state required"}
+
+        if safe and amber_index is not None:
+            res = _safe_switch(tl, int(phase_index),
+                               amber_index=int(amber_index),
+                               amber_duration=amber_duration,
+                               target_duration=duration)
+            return {"id": tl, "applied": True, "result": res}
+
+        res2 = _apply_phase_once(tl, int(phase_index),
+                                 duration=duration, force=True)
+        try:
+            phase_idx = traci.trafficlight.getPhase(tl)
+            phase_state_now = traci.trafficlight.getRedYellowGreenState(tl)
+            phase_remaining = traci.trafficlight.getPhaseDuration(tl)
+            program_id = traci.trafficlight.getProgram(tl)
+            cycle = _build_tl_cycle(tl, program_id)
+        except Exception:
+            phase_remaining = program_id = cycle = None
+            phase_idx = phase_state_now = phase_remaining
+
+        return {
+            "id": tl,
+            "applied": bool(res2.get("applied")),
+            "phaseIndex": phase_idx,
+            "phaseState": phase_state_now,
+            "phaseRemaining": phase_remaining,
+            "program": program_id,
+            "cycle": cycle,
+            "raw": res2,
+        }
+
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _resolve_phase_index(tl: str, phase_state: str) -> Optional[int]:
+    try:
+        program = traci.trafficlight.getProgram(tl)
+        cycle = _build_tl_cycle(tl, program)
+        for idx, ph in enumerate(cycle.get("phases", [])):
+            if ph.get("state") == phase_state:
+                return idx
+    except Exception:
+        pass
+    return None
+
+
+def _apply_phase_once(tl: str, phase_index: int,
+                      duration: Optional[float] = None,
+                      force: bool = False,
+                      min_remaining: float = 2.0) -> Dict[str, Any]:
+    try:
+        if tl not in traci.trafficlight.getIDList():
+            return {"applied": False, "error": "tl not found"}
+
+        cur_phase = traci.trafficlight.getPhase(tl)
+        try:
+            remaining = traci.trafficlight.getPhaseDuration(tl)
+        except Exception:
+            remaining = None
+
+        if not force and cur_phase == int(phase_index):
+            if remaining is None or float(remaining) > float(min_remaining):
+                return {
+                    "applied": False,
+                    "reason": "already_active",
+                    "phaseIndex": int(cur_phase),
+                    "phaseRemaining": remaining
+                }
+
+        traci.trafficlight.setPhase(tl, int(phase_index))
+        if duration is not None:
+            traci.trafficlight.setPhaseDuration(tl, float(duration))
+
+        try:
+            new_phase = traci.trafficlight.getPhase(tl)
+            new_state = traci.trafficlight.getRedYellowGreenState(tl)
+            new_remaining = traci.trafficlight.getPhaseDuration(tl)
+        except Exception:
+            return {"applied": True,
+                    "warning": "applied but failed to read back"}
+
+        return {
+            "applied": True,
+            "phaseIndex": int(new_phase),
+            "phaseState": new_state,
+            "phaseRemaining": new_remaining
+        }
+
+    except Exception as e:
+        return {"applied": False, "error": str(e)}
+
+
+def _safe_switch(tl: str, target_index: int, amber_index: Optional[int] = None,
+                 amber_duration: float = 3.0,
+                 target_duration: Optional[float] = None,
+                 step_per_second: bool = True) -> Dict[str, Any]:
+    out: Dict[str, Any] = {"tl": tl, "actions": []}
+    try:
+        if tl not in traci.trafficlight.getIDList():
+            out["error"] = "tl not found"
+            return out
+
+        if amber_index is not None:
+            res = _apply_phase_once(
+                tl, amber_index, duration=amber_duration, force=True)
+            out["actions"].append({"amber_applied": res})
+            steps = max(1, int(round(amber_duration))
+                        ) if step_per_second else 0
+            for _ in range(steps):
+                try:
+                    traci.simulationStep()
+                except Exception:
+                    break
+
+        res2 = _apply_phase_once(
+            tl, target_index, duration=target_duration, force=True)
+        out["actions"].append({"target_applied": res2})
+
+        try:
+            prog = traci.trafficlight.getProgram(tl)
+            cycle = _build_tl_cycle(tl, prog)
+            out["program"] = prog
+            out["cycle"] = cycle
+        except Exception:
+            pass
+
+        return out
+
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _set_phase_by_state(tl: str, phase_state: str,
+                        duration: Optional[float] = None, **kwargs
+                        ) -> Dict[str, Any]:
+    idx = _resolve_phase_index(tl, phase_state)
+    if idx is None:
+        return {"applied": False, "error": "state not found",
+                "requested_state": phase_state}
+    return _apply_phase_once(tl, idx, duration=duration, **kwargs)
 
 
 @endpoint
